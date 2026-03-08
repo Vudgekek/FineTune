@@ -26,8 +26,6 @@ struct AppRow: View {
     let onAppActivate: () -> Void
     let onPinToggle: () -> Void  // Toggle pin state
     let onExclude: () -> Void
-    let onInclude: () -> Void
-    let isExcluded: Bool
 
     @State private var isRowHovered = false
     @State private var isIconHovered = false
@@ -56,9 +54,7 @@ struct AppRow: View {
         onSelectFollowDefault: @escaping () -> Void = {},
         onAppActivate: @escaping () -> Void = {},
         onPinToggle: @escaping () -> Void = {},
-        onExclude: @escaping () -> Void = {},
-        onInclude: @escaping () -> Void = {},
-        isExcluded: Bool = false
+        onExclude: @escaping () -> Void = {}
     ) {
         self.app = app
         self.volume = volume
@@ -81,8 +77,6 @@ struct AppRow: View {
         self.onAppActivate = onAppActivate
         self.onPinToggle = onPinToggle
         self.onExclude = onExclude
-        self.onInclude = onInclude
-        self.isExcluded = isExcluded
     }
 
     var body: some View {
@@ -113,7 +107,6 @@ struct AppRow: View {
                         }
                     }
                     .onTapGesture {
-                        guard !isExcluded else { return }
                         onAppActivate()
                     }
 
@@ -143,14 +136,12 @@ struct AppRow: View {
                     PopoverHost(isPresented: $isActionsMenuPresented) {
                         VStack(spacing: 2) {
                             Button(isPinned ? "Unpin App" : "Pin App") {
-                                guard !isExcluded else { return }
                                 isActionsMenuPresented = false
                                 DispatchQueue.main.async {
                                     onPinToggle()
                                 }
                             }
                             .buttonStyle(.plain)
-                            .disabled(isExcluded)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
@@ -162,14 +153,10 @@ struct AppRow: View {
                                 isPinActionHovered = hovering
                             }
 
-                            Button(isExcluded ? "Include in FineTune" : "Exclude from FineTune") {
+                            Button("Exclude from FineTune") {
                                 isActionsMenuPresented = false
                                 DispatchQueue.main.async {
-                                    if isExcluded {
-                                        onInclude()
-                                    } else {
-                                        onExclude()
-                                    }
+                                    onExclude()
                                 }
                             }
                             .buttonStyle(.plain)
@@ -218,12 +205,9 @@ struct AppRow: View {
                     onSelectFollowDefault: onSelectFollowDefault
                 )
                 .layoutPriority(1)
-                .allowsHitTesting(!isExcluded)
-                .opacity(isExcluded ? 0.45 : 1.0)
             }
             .frame(height: DesignTokens.Dimensions.rowContentHeight)
             .onHover { isRowHovered = $0 }
-            .opacity(isExcluded ? 0.62 : 1.0)
         } expandedContent: {
             EmptyView()
         }
@@ -256,8 +240,6 @@ struct AppRowWithLevelPolling: View {
     let onAppActivate: () -> Void
     let onPinToggle: () -> Void  // Toggle pin state
     let onExclude: () -> Void
-    let onInclude: () -> Void
-    let isExcluded: Bool
 
     @State private var displayLevel: Float = 0
     @State private var levelTimer: Timer?
@@ -284,9 +266,7 @@ struct AppRowWithLevelPolling: View {
         onSelectFollowDefault: @escaping () -> Void = {},
         onAppActivate: @escaping () -> Void = {},
         onPinToggle: @escaping () -> Void = {},
-        onExclude: @escaping () -> Void = {},
-        onInclude: @escaping () -> Void = {},
-        isExcluded: Bool = false
+        onExclude: @escaping () -> Void = {}
     ) {
         self.app = app
         self.volume = volume
@@ -310,8 +290,6 @@ struct AppRowWithLevelPolling: View {
         self.onAppActivate = onAppActivate
         self.onPinToggle = onPinToggle
         self.onExclude = onExclude
-        self.onInclude = onInclude
-        self.isExcluded = isExcluded
     }
 
     var body: some View {
@@ -336,9 +314,7 @@ struct AppRowWithLevelPolling: View {
             onSelectFollowDefault: onSelectFollowDefault,
             onAppActivate: onAppActivate,
             onPinToggle: onPinToggle,
-            onExclude: onExclude,
-            onInclude: onInclude,
-            isExcluded: isExcluded
+            onExclude: onExclude
         )
         .onAppear {
             if isPopupVisible {

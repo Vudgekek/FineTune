@@ -22,6 +22,13 @@ import os
 // Aligned Float32/Bool/Int reads/writes are atomic on Apple ARM64/x86-64.
 
 final class ProcessTapController {
+    private struct DeviceOutputRoute {
+        let deviceUID: String
+        let leftChannel: Int
+        let rightChannel: Int
+        let processor: EQProcessor
+    }
+
     let app: AudioApp
     private let logger: Logger
     // Note: This queue is passed to AudioDeviceCreateIOProcIDWithBlock but the actual
@@ -95,6 +102,10 @@ final class ProcessTapController {
     private nonisolated(unsafe) var rampCoefficient: Float = 0.0007
     private nonisolated(unsafe) var secondaryRampCoefficient: Float = 0.0007
     private nonisolated(unsafe) var eqProcessor: EQProcessor?
+    private nonisolated(unsafe) var _primaryDeviceOutputRoutes: [DeviceOutputRoute] = []
+    private nonisolated(unsafe) var _secondaryDeviceOutputRoutes: [DeviceOutputRoute] = []
+    private var primaryProcessorsByDeviceUID: [String: EQProcessor] = [:]
+    private var secondaryProcessorsByDeviceUID: [String: EQProcessor] = [:]
 
     // Target device UIDs for synchronized multi-output (first is clock source)
     private var targetDeviceUIDs: [String]
@@ -207,11 +218,63 @@ final class ProcessTapController {
     // MARK: - Public Methods
 
     func updateEQSettings(_ settings: EQSettings) {
+        if currentDeviceUIDs.count > 1 {
+            for processor in primaryProcessorsByDeviceUID.values {
+                processor.updateSettings(settings)
+            }
+            for processor in secondaryProcessorsByDeviceUID.values {
+                processor.updateSettings(settings)
+            }
+            return
+        }
         eqProcessor?.updateSettings(settings)
     }
 
     func updateHeadphoneEQSettings(_ settings: HeadphoneEQSettings) {
+        if currentDeviceUIDs.count > 1 {
+            for processor in primaryProcessorsByDeviceUID.values {
+                processor.updateHeadphoneSettings(settings)
+            }
+            for processor in secondaryProcessorsByDeviceUID.values {
+                processor.updateHeadphoneSettings(settings)
+            }
+            return
+        }
         eqProcessor?.updateHeadphoneSettings(settings)
+    }
+
+    func updateEQSettings(for deviceUID: String, settings: EQSettings) {
+        if currentDeviceUIDs.count > 1 {
+            primaryProcessorsByDeviceUID[deviceUID]?.updateSettings(settings)
+            secondaryProcessorsByDeviceUID[deviceUID]?.updateSettings(settings)
+            return
+        }
+
+        guard currentDeviceUID == deviceUID else { return }
+        eqProcessor?.updateSettings(settings)
+    }
+
+    func updateHeadphoneEQSettings(for deviceUID: String, settings: HeadphoneEQSettings) {
+        if currentDeviceUIDs.count > 1 {
+            primaryProcessorsByDeviceUID[deviceUID]?.updateHeadphoneSettings(settings)
+            secondaryProcessorsByDeviceUID[deviceUID]?.updateHeadphoneSettings(settings)
+            return
+        }
+
+        guard currentDeviceUID == deviceUID else { return }
+        eqProcessor?.updateHeadphoneSettings(settings)
+    }
+
+    func updateEQSettingsByDevice(_ settingsByDeviceUID: [String: EQSettings]) {
+        for (uid, settings) in settingsByDeviceUID {
+            updateEQSettings(for: uid, settings: settings)
+        }
+    }
+
+    func updateHeadphoneEQSettingsByDevice(_ settingsByDeviceUID: [String: HeadphoneEQSettings]) {
+        for (uid, settings) in settingsByDeviceUID {
+            updateHeadphoneEQSettings(for: uid, settings: settings)
+        }
     }
 
     private func allocateCallbackID() -> UInt64 {
@@ -219,6 +282,95 @@ final class ProcessTapController {
         nextCallbackID &+= 1
         if nextCallbackID == 0 { nextCallbackID = 1 }
         return callbackID
+    }
+
+    private func snapshotSettingsByDeviceUID(from processors: [String: EQProcessor]) -> [String: (graphic: EQSettings, headphone: HeadphoneEQSettings)] {
+        var snapshot: [String: (graphic: EQSettings, headphone: HeadphoneEQSettings)] = [:]
+        snapshot.reserveCapacity(processors.count)
+        for (uid, processor) in processors {
+            snapshot[uid] = (processor.graphicSettingsSnapshot, processor.headphoneSettingsSnapshot)
+        }
+        return snapshot
+    }
+
+    private func buildDeviceOutputRoutes(
+        outputUIDs: [String],
+        sampleRate: Double,
+        initialSettingsByDeviceUID: [String: (graphic: EQSettings, headphone: HeadphoneEQSettings)]
+    ) -> (routes: [DeviceOutputRoute], processorsByUID: [String: EQProcessor]) {
+        var routes: [DeviceOutputRoute] = []
+        routes.reserveCapacity(outputUIDs.count)
+        var processorsByUID: [String: EQProcessor] = [:]
+        processorsByUID.reserveCapacity(outputUIDs.count)
+
+        var channelOffset = 0
+        for uid in outputUIDs {
+            let deviceID = audioDeviceID(for: uid)
+            let channelCount = max(1, deviceID?.outputChannelCount() ?? 2)
+            let preferred = preferredStereoChannels(for: uid)
+            let leftRelative = min(max(preferred.left, 0), channelCount - 1)
+            var rightRelative = min(max(preferred.right, 0), channelCount - 1)
+            if rightRelative == leftRelative && channelCount > 1 {
+                rightRelative = leftRelative == channelCount - 1 ? leftRelative - 1 : leftRelative + 1
+            }
+
+            let processor = EQProcessor(sampleRate: sampleRate)
+            if let initialSettings = initialSettingsByDeviceUID[uid] {
+                processor.updateSettings(initialSettings.graphic)
+                processor.updateHeadphoneSettings(initialSettings.headphone)
+            }
+
+            routes.append(
+                DeviceOutputRoute(
+                    deviceUID: uid,
+                    leftChannel: channelOffset + leftRelative,
+                    rightChannel: channelOffset + rightRelative,
+                    processor: processor
+                )
+            )
+            processorsByUID[uid] = processor
+            channelOffset += channelCount
+        }
+
+        return (routes, processorsByUID)
+    }
+
+    private func configurePrimaryOutputProcessing(for outputUIDs: [String], sampleRate: Double) {
+        if outputUIDs.count <= 1 {
+            _primaryDeviceOutputRoutes = []
+            primaryProcessorsByDeviceUID = [:]
+            return
+        }
+
+        let routes = buildDeviceOutputRoutes(
+            outputUIDs: outputUIDs,
+            sampleRate: sampleRate,
+            initialSettingsByDeviceUID: snapshotSettingsByDeviceUID(from: primaryProcessorsByDeviceUID)
+        )
+        _primaryDeviceOutputRoutes = routes.routes
+        primaryProcessorsByDeviceUID = routes.processorsByUID
+    }
+
+    private func configureSecondaryOutputProcessing(for outputUIDs: [String], sampleRate: Double) {
+        if outputUIDs.count <= 1 {
+            _secondaryDeviceOutputRoutes = []
+            secondaryProcessorsByDeviceUID = [:]
+            return
+        }
+
+        let sourceSettings = snapshotSettingsByDeviceUID(from: primaryProcessorsByDeviceUID)
+        let routes = buildDeviceOutputRoutes(
+            outputUIDs: outputUIDs,
+            sampleRate: sampleRate,
+            initialSettingsByDeviceUID: sourceSettings
+        )
+        _secondaryDeviceOutputRoutes = routes.routes
+        secondaryProcessorsByDeviceUID = routes.processorsByUID
+    }
+
+    private func clearSecondaryOutputProcessingState() {
+        _secondaryDeviceOutputRoutes = []
+        secondaryProcessorsByDeviceUID = [:]
     }
 
     // MARK: - Multi-Device Aggregate Configuration
@@ -247,7 +399,8 @@ final class ProcessTapController {
             kAudioAggregateDeviceMainSubDeviceKey: clockDeviceUID,
             kAudioAggregateDeviceClockDeviceKey: clockDeviceUID,
             kAudioAggregateDeviceIsPrivateKey: true,
-            kAudioAggregateDeviceIsStackedKey: true,  // All sub-devices receive same audio
+            // Multi-output with per-device EQ requires independent channel groups (non-stacked).
+            kAudioAggregateDeviceIsStackedKey: outputUIDs.count == 1,
             kAudioAggregateDeviceTapAutoStartKey: true,
             kAudioAggregateDeviceSubDeviceListKey: subDevices,
             kAudioAggregateDeviceTapListKey: [
@@ -402,8 +555,15 @@ final class ProcessTapController {
         let rampTimeSeconds: Float = 0.030  // 30ms - fast enough to feel responsive, slow enough to avoid clicks
         rampCoefficient = 1 - exp(-1 / (Float(sampleRate) * rampTimeSeconds))
         logger.debug("Ramp coefficient: \(self.rampCoefficient)")
-
-        eqProcessor = EQProcessor(sampleRate: sampleRate)
+        clearSecondaryOutputProcessingState()
+        if targetDeviceUIDs.count > 1 {
+            eqProcessor = nil
+            configurePrimaryOutputProcessing(for: targetDeviceUIDs, sampleRate: sampleRate)
+        } else {
+            eqProcessor = EQProcessor(sampleRate: sampleRate)
+            _primaryDeviceOutputRoutes = []
+            primaryProcessorsByDeviceUID = [:]
+        }
 
         // Create IO proc with gain processing
         let primaryCallbackID = allocateCallbackID()
@@ -468,24 +628,39 @@ final class ProcessTapController {
         // For now, crossfade uses the first (primary) device
         // All devices in the aggregate will be included
         let primaryDeviceUID = newDeviceUIDs[0]
+        let previousDeviceUIDs = currentDeviceUIDs
+        let shouldUseCrossfade = previousDeviceUIDs.count == 1 && newDeviceUIDs.count == 1
 
         crossfadeTask?.cancel()
-        crossfadeTask = Task {
-            try await performCrossfadeSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs)
-        }
-        do {
-            try await crossfadeTask!.value
-        } catch is CancellationError {
-            logger.info("[UPDATE] Crossfade cancelled by invalidate()")
-            return
-        } catch {
-            logger.warning("[UPDATE] Crossfade failed: \(error.localizedDescription), using fallback")
-            guard primaryResources.tapDescription != nil else {
-                throw CrossfadeError.noTapDescription
+        if shouldUseCrossfade {
+            crossfadeTask = Task {
+                try await performCrossfadeSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs)
             }
-            try await performDestructiveDeviceSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs)
+            do {
+                try await crossfadeTask!.value
+            } catch is CancellationError {
+                logger.info("[UPDATE] Crossfade cancelled by invalidate()")
+                return
+            } catch {
+                logger.warning("[UPDATE] Crossfade failed: \(error.localizedDescription), using fallback")
+                guard primaryResources.tapDescription != nil else {
+                    throw CrossfadeError.noTapDescription
+                }
+                try await performDestructiveDeviceSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs)
+            }
+            crossfadeTask = nil
+        } else {
+            logger.debug("[UPDATE] Multi-device topology change detected - using direct switch")
+            do {
+                try performDeviceSwitch(to: newDeviceUIDs)
+            } catch {
+                logger.warning("[UPDATE] Direct switch failed: \(error.localizedDescription), using fallback")
+                guard primaryResources.tapDescription != nil else {
+                    throw CrossfadeError.noTapDescription
+                }
+                try await performDestructiveDeviceSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs)
+            }
         }
-        crossfadeTask = nil
 
         targetDeviceUIDs = newDeviceUIDs
         currentDeviceUIDs = newDeviceUIDs
@@ -514,6 +689,10 @@ final class ProcessTapController {
         logger.debug("Invalidating tap for \(self.app.name)")
 
         crossfadeState.complete()
+        _primaryDeviceOutputRoutes = []
+        clearSecondaryOutputProcessingState()
+        primaryProcessorsByDeviceUID = [:]
+        eqProcessor = nil
 
         // destroyAsync() captures IDs, clears instance state immediately,
         // then dispatches blocking teardown to a background queue.
@@ -620,6 +799,7 @@ final class ProcessTapController {
 
     private func createSecondaryTap(for outputUIDs: [String]) throws {
         precondition(!outputUIDs.isEmpty, "Must have at least one output device")
+        clearSecondaryOutputProcessingState()
 
         let (tapDesc, tapID) = try createProcessTap(preferredDeviceUID: preferredTapSourceDeviceUID)
         secondaryResources.tapDescription = tapDesc
@@ -643,6 +823,7 @@ final class ProcessTapController {
         guard err == noErr else {
             // TapResources.destroy() handles correct teardown order + CrashGuard.untrackDevice
             secondaryResources.destroy()
+            clearSecondaryOutputProcessingState()
             throw CrossfadeError.aggregateCreationFailed(err)
         }
         secondaryResources.aggregateDeviceID = aggID
@@ -650,6 +831,7 @@ final class ProcessTapController {
 
         guard secondaryResources.aggregateDeviceID.waitUntilReady(timeout: 2.0) else {
             secondaryResources.destroy()
+            clearSecondaryOutputProcessingState()
             throw CrossfadeError.deviceNotReady
         }
 
@@ -667,6 +849,7 @@ final class ProcessTapController {
         secondaryRampCoefficient = 1 - exp(-1 / (Float(sampleRate) * rampTimeSeconds))
 
         _secondaryCurrentVolume = _primaryCurrentVolume
+        configureSecondaryOutputProcessing(for: outputUIDs, sampleRate: sampleRate)
 
         let secondaryCallbackID = allocateCallbackID()
         err = AudioDeviceCreateIOProcIDWithBlock(&secondaryResources.deviceProcID, secondaryResources.aggregateDeviceID, queue) { [weak self] _, inInputData, _, outOutputData, _ in
@@ -683,6 +866,7 @@ final class ProcessTapController {
         guard err == noErr else {
             _activeSecondaryCallbackID = 0
             secondaryResources.destroy()
+            clearSecondaryOutputProcessingState()
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -691,6 +875,7 @@ final class ProcessTapController {
         guard err == noErr else {
             _activeSecondaryCallbackID = 0
             secondaryResources.destroy()
+            clearSecondaryOutputProcessingState()
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -704,6 +889,7 @@ final class ProcessTapController {
     /// Tears down any in-progress secondary tap (used by re-entrant crossfade guard).
     private func cleanupSecondaryTap() {
         _activeSecondaryCallbackID = 0
+        clearSecondaryOutputProcessingState()
         guard secondaryResources.isActive else { return }
         secondaryResources.destroy()
     }
@@ -713,6 +899,16 @@ final class ProcessTapController {
         secondaryResources = TapResources()
         _activePrimaryCallbackID = _activeSecondaryCallbackID
         _activeSecondaryCallbackID = 0
+
+        if !_secondaryDeviceOutputRoutes.isEmpty {
+            _primaryDeviceOutputRoutes = _secondaryDeviceOutputRoutes
+            primaryProcessorsByDeviceUID = secondaryProcessorsByDeviceUID
+            eqProcessor = nil
+        } else {
+            _primaryDeviceOutputRoutes = []
+            primaryProcessorsByDeviceUID = [:]
+        }
+        clearSecondaryOutputProcessingState()
 
         if let deviceSampleRate = try? primaryResources.aggregateDeviceID.readNominalSampleRate() {
             let rampTimeSeconds: Float = 0.030
@@ -825,15 +1021,30 @@ final class ProcessTapController {
         targetDeviceUIDs = outputUIDs
         currentDeviceUIDs = outputUIDs
 
-        if let deviceSampleRate = try? primaryResources.aggregateDeviceID.readNominalSampleRate() {
-            rampCoefficient = 1 - exp(-1 / (Float(deviceSampleRate) * 0.030))
-            eqProcessor?.updateSampleRate(deviceSampleRate)
+        let deviceSampleRate = (try? primaryResources.aggregateDeviceID.readNominalSampleRate()) ?? 48000
+        rampCoefficient = 1 - exp(-1 / (Float(deviceSampleRate) * 0.030))
+        if outputUIDs.count > 1 {
+            eqProcessor = nil
+            configurePrimaryOutputProcessing(for: outputUIDs, sampleRate: deviceSampleRate)
+        } else {
+            if eqProcessor == nil {
+                eqProcessor = EQProcessor(sampleRate: deviceSampleRate)
+            } else {
+                eqProcessor?.updateSampleRate(deviceSampleRate)
+            }
+            _primaryDeviceOutputRoutes = []
+            primaryProcessorsByDeviceUID = [:]
         }
+        clearSecondaryOutputProcessingState()
     }
 
     private func cleanupPartialActivation() {
         _activePrimaryCallbackID = 0
         _activeSecondaryCallbackID = 0
+        _primaryDeviceOutputRoutes = []
+        clearSecondaryOutputProcessingState()
+        primaryProcessorsByDeviceUID = [:]
+        eqProcessor = nil
         primaryResources.destroy()
     }
 
@@ -870,6 +1081,7 @@ final class ProcessTapController {
         targetVol: Float,
         crossfadeMultiplier: Float,
         rampCoefficient: Float,
+        outputRoutes: [DeviceOutputRoute],
         preferredStereoLeft: Int,
         preferredStereoRight: Int,
         currentVol: inout Float
@@ -878,16 +1090,23 @@ final class ProcessTapController {
         let inputBufferCount = inputBuffers.count
         let outputBufferCount = outputBuffers.count
         let crossfadeActive = crossfadeState.isActive
+        let useMirroredInputForMultiOutput = !outputRoutes.isEmpty && outputBufferCount > 1
+        let shouldApplyAutomaticPreamp = outputRoutes.isEmpty
 
         for outputIndex in 0..<outputBufferCount {
             let outputBuffer = outputBuffers[outputIndex]
             guard let outputData = outputBuffer.mData else { continue }
 
             let inputIndex: Int
-            if inputBufferCount > outputBufferCount {
+            if useMirroredInputForMultiOutput {
+                // Aggregate multi-output commonly provides one active tap input stream;
+                // mirror it across all output buffers so every selected device receives audio.
+                inputIndex = max(0, inputBufferCount - 1)
+            } else if inputBufferCount >= outputBufferCount {
                 inputIndex = inputBufferCount - outputBufferCount + outputIndex
             } else {
-                inputIndex = outputIndex
+                // Mirror a single input buffer across multiple output buffers.
+                inputIndex = max(0, min(outputIndex, inputBufferCount - 1))
             }
 
             guard inputIndex < inputBufferCount else {
@@ -918,11 +1137,77 @@ final class ProcessTapController {
 
             let safeLeft = min(max(preferredStereoLeft, 0), max(outputChannels - 1, 0))
             let safeRight = min(max(preferredStereoRight, 0), max(outputChannels - 1, 0))
+            let routeForBuffer: DeviceOutputRoute? = {
+                guard !outputRoutes.isEmpty, outputBufferCount > 1 else { return nil }
+                let routeIndex = min(outputIndex, outputRoutes.count - 1)
+                return outputRoutes[routeIndex]
+            }()
 
-            let eq = eqProcessor  // Single atomic read — prevents TOCTOU with EQ check below
+            let usePerDeviceRoutes = !outputRoutes.isEmpty && inputChannels <= 2 && outputChannels > 2
+            if usePerDeviceRoutes {
+                memset(outputData, 0, Int(outputBuffer.mDataByteSize))
+                for frame in 0..<frameCount {
+                    currentVol += (targetVol - currentVol) * rampCoefficient
+                    let baseGain = currentVol * crossfadeMultiplier
+
+                    let inputLeft: Float
+                    let inputRight: Float
+                    if inputChannels == 1 {
+                        let mono = inputSamples[frame]
+                        inputLeft = mono
+                        inputRight = mono
+                    } else {
+                        let inBase = frame * inputChannels
+                        inputLeft = inputSamples[inBase]
+                        inputRight = inputSamples[inBase + 1]
+                    }
+
+                    let probe = abs(inputLeft)
+                    if probe > maxPeak { maxPeak = probe }
+
+                    let outBase = frame * outputChannels
+                    for route in outputRoutes {
+                        guard route.leftChannel >= 0, route.leftChannel < outputChannels else { continue }
+                        let rightChannel = min(max(route.rightChannel, 0), outputChannels - 1)
+                        let preamp = (!crossfadeActive && route.processor.isEnabled && shouldApplyAutomaticPreamp)
+                            ? route.processor.preampAttenuation
+                            : 1.0
+                        let scaledLeft = inputLeft * baseGain * preamp
+                        let scaledRight = inputRight * baseGain * preamp
+
+                        outputSamples[outBase + route.leftChannel] = scaledLeft
+                        if rightChannel == route.leftChannel {
+                            outputSamples[outBase + rightChannel] = (scaledLeft + scaledRight) * 0.5
+                        } else {
+                            outputSamples[outBase + rightChannel] = scaledRight
+                        }
+                    }
+                }
+
+                if !crossfadeActive {
+                    for route in outputRoutes {
+                        guard route.leftChannel >= 0, route.leftChannel < outputChannels else { continue }
+                        let rightChannel = min(max(route.rightChannel, 0), outputChannels - 1)
+                        guard route.processor.isEnabled else { continue }
+                        route.processor.processInterleavedStrided(
+                            samples: outputSamples,
+                            frameCount: frameCount,
+                            frameStride: outputChannels,
+                            leftChannel: route.leftChannel,
+                            rightChannel: rightChannel
+                        )
+                    }
+                }
+
+                let writtenSampleCount = frameCount * outputChannels
+                SoftLimiter.processBuffer(outputSamples, sampleCount: writtenSampleCount)
+                continue
+            }
+
+            let eq = routeForBuffer?.processor ?? eqProcessor  // Single atomic read — prevents TOCTOU with EQ check below
             let eqCanProcessStereoInterleaved = (inputChannels == 2 && outputChannels == 2)
             let shouldApplyEQ = (eq?.isEnabled == true && eqCanProcessStereoInterleaved && !crossfadeActive)
-            let preamp: Float = shouldApplyEQ ? (eq?.preampAttenuation ?? 1.0) : 1.0
+            let preamp: Float = (shouldApplyEQ && shouldApplyAutomaticPreamp) ? (eq?.preampAttenuation ?? 1.0) : 1.0
 
             if inputChannels == outputChannels {
                 let sampleCount = frameCount * inputChannels
@@ -1053,6 +1338,7 @@ final class ProcessTapController {
             targetVol: targetVol,
             crossfadeMultiplier: crossfadeMultiplier,
             rampCoefficient: rampCoefficient,
+            outputRoutes: _primaryDeviceOutputRoutes,
             preferredStereoLeft: _primaryPreferredStereoLeftChannel,
             preferredStereoRight: _primaryPreferredStereoRightChannel,
             currentVol: &currentVol
@@ -1110,6 +1396,7 @@ final class ProcessTapController {
             targetVol: targetVol,
             crossfadeMultiplier: crossfadeMultiplier,
             rampCoefficient: secondaryRampCoefficient,
+            outputRoutes: _secondaryDeviceOutputRoutes,
             preferredStereoLeft: _secondaryPreferredStereoLeftChannel,
             preferredStereoRight: _secondaryPreferredStereoRightChannel,
             currentVol: &currentVol

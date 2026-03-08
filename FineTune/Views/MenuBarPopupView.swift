@@ -552,7 +552,6 @@ struct MenuBarPopupView: View {
     /// Row for an active app (currently producing audio)
     @ViewBuilder
     private func activeAppRow(app: AudioApp) -> some View {
-        let isExcluded = audioEngine.isExcluded(app)
         let deviceUID = audioEngine.getDeviceUID(for: app)
             ?? deviceVolumeMonitor.defaultDeviceUID
             ?? sortedDevices.first?.uid
@@ -602,11 +601,7 @@ struct MenuBarPopupView: View {
             },
             onExclude: {
                 audioEngine.excludeApp(identifier: app.persistenceIdentifier)
-            },
-            onInclude: {
-                audioEngine.includeApp(identifier: app.persistenceIdentifier)
-            },
-            isExcluded: isExcluded
+            }
         )
     }
 

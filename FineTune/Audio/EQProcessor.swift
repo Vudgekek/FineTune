@@ -44,6 +44,12 @@ final class EQProcessor: @unchecked Sendable {
     /// Pre-EQ gain reduction to prevent clipping (RT-safe read).
     var preampAttenuation: Float { _preampAttenuation }
 
+    /// Snapshot of the currently configured graphic EQ settings (main-thread use).
+    var graphicSettingsSnapshot: EQSettings { _currentGraphicSettings }
+
+    /// Snapshot of the currently configured headphone EQ settings (main-thread use).
+    var headphoneSettingsSnapshot: HeadphoneEQSettings { _currentHeadphoneSettings }
+
     init(sampleRate: Double) {
         self.sampleRate = sampleRate
 
@@ -274,6 +280,86 @@ final class EQProcessor: @unchecked Sendable {
                 2,
                 output.advanced(by: 1),
                 2,
+                vDSP_Length(frameCount)
+            )
+        }
+    }
+
+    /// Process a stereo pair embedded in an interleaved multichannel buffer (RT-safe).
+    /// - Parameters:
+    ///   - samples: Interleaved Float32 samples.
+    ///   - frameCount: Number of frames in the buffer.
+    ///   - frameStride: Total channel count (stride between successive samples of one channel).
+    ///   - leftChannel: Zero-based index of left channel within each frame.
+    ///   - rightChannel: Zero-based index of right channel within each frame.
+    func processInterleavedStrided(
+        samples: UnsafeMutablePointer<Float>,
+        frameCount: Int,
+        frameStride: Int,
+        leftChannel: Int,
+        rightChannel: Int
+    ) {
+        guard frameCount > 0, frameStride > 0 else { return }
+        guard leftChannel >= 0, rightChannel >= 0 else { return }
+        guard leftChannel < frameStride, rightChannel < frameStride else { return }
+
+        let graphicEnabled = _isGraphicEnabled
+        let headphoneEnabled = _isHeadphoneEnabled
+
+        guard graphicEnabled || headphoneEnabled else { return }
+
+        let graphicSetup = _graphicSetup
+        let headphoneSetup = _headphoneSetup
+        let headphoneDelayL = _headphoneDelayBufferL
+        let headphoneDelayR = _headphoneDelayBufferR
+
+        let stride = vDSP_Stride(frameStride)
+        let leftPtr = samples.advanced(by: leftChannel)
+        let rightPtr = samples.advanced(by: rightChannel)
+
+        if headphoneEnabled,
+           let hpSetup = headphoneSetup,
+           let hpDelayL = headphoneDelayL,
+           let hpDelayR = headphoneDelayR {
+            vDSP_biquad(
+                hpSetup,
+                hpDelayL,
+                leftPtr,
+                stride,
+                leftPtr,
+                stride,
+                vDSP_Length(frameCount)
+            )
+
+            vDSP_biquad(
+                hpSetup,
+                hpDelayR,
+                rightPtr,
+                stride,
+                rightPtr,
+                stride,
+                vDSP_Length(frameCount)
+            )
+        }
+
+        if graphicEnabled, let gSetup = graphicSetup {
+            vDSP_biquad(
+                gSetup,
+                graphicDelayBufferL,
+                leftPtr,
+                stride,
+                leftPtr,
+                stride,
+                vDSP_Length(frameCount)
+            )
+
+            vDSP_biquad(
+                gSetup,
+                graphicDelayBufferR,
+                rightPtr,
+                stride,
+                rightPtr,
+                stride,
                 vDSP_Length(frameCount)
             )
         }
