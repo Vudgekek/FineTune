@@ -58,7 +58,7 @@ struct SettingsSliderRow: View {
 #Preview("Slider Rows") {
     VStack(spacing: DesignTokens.Spacing.sm) {
         SettingsSliderRow(
-            icon: "speaker.wave.2",
+            icon: "speaker.wave.3",
             title: "Default Volume",
             description: "Initial volume for new apps",
             value: .constant(1.0),

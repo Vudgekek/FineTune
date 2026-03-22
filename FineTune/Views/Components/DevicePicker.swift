@@ -96,7 +96,7 @@ struct DevicePicker: View {
                 // No multi selections - show single-mode icon
                 singleModeIcon
             } else {
-                Image(systemName: "speaker.wave.2.fill")
+                Image(systemName: "speaker.wave.3.fill")
                     .font(.system(size: 13))
             }
         }
@@ -115,7 +115,7 @@ struct DevicePicker: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 16, height: 16)
         } else {
-            Image(systemName: "speaker.wave.2")
+            Image(systemName: "speaker.wave.3")
                 .font(.system(size: 13))
         }
     }
@@ -389,7 +389,7 @@ private struct DevicePickerRow: View {
                     .frame(width: 16, height: 16)
                     .opacity(isDisabled ? 0.4 : 1.0)
             } else {
-                Image(systemName: "speaker.wave.2")
+                Image(systemName: "speaker.wave.3")
                     .font(.system(size: 13))
                     .frame(width: 16)
             }

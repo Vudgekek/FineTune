@@ -69,7 +69,7 @@ struct SettingsView: View {
                 .padding(.bottom, DesignTokens.Spacing.xs)
 
             SettingsSliderRow(
-                icon: "speaker.wave.2",
+                icon: "speaker.wave.3",
                 title: "Default Volume",
                 description: "Initial volume for new apps",
                 value: $settings.defaultNewAppVolume,

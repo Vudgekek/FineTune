@@ -1,17 +1,48 @@
 // FineTune/Views/Components/MuteButton.swift
 import SwiftUI
 
+enum SpeakerVolumeIcon {
+    static func symbolName(levelFraction: Double, isMuted: Bool = false, filled: Bool = true) -> String {
+        if isMuted {
+            return filled ? "speaker.slash.fill" : "speaker.slash"
+        }
+
+        let level = max(0.0, min(1.0, levelFraction))
+        let suffix = filled ? ".fill" : ""
+
+        if level <= 1.0 / 3.0 {
+            return "speaker.wave.1\(suffix)"
+        } else if level <= 2.0 / 3.0 {
+            return "speaker.wave.2\(suffix)"
+        } else {
+            return "speaker.wave.3\(suffix)"
+        }
+    }
+
+    static func layoutReferenceSymbol(filled: Bool = true) -> String {
+        filled ? "speaker.wave.3.fill" : "speaker.wave.3"
+    }
+}
+
 /// A mute button with pulse animation on toggle
 /// Shows speaker.wave when unmuted, speaker.slash when muted
 struct MuteButton: View {
     let isMuted: Bool
+    let levelFraction: Double
     let action: () -> Void
+
+    init(isMuted: Bool, levelFraction: Double = 1.0, action: @escaping () -> Void) {
+        self.isMuted = isMuted
+        self.levelFraction = levelFraction
+        self.action = action
+    }
 
     var body: some View {
         BaseMuteButton(
             isMuted: isMuted,
             mutedIcon: "speaker.slash.fill",
-            unmutedIcon: "speaker.wave.2.fill",
+            unmutedIcon: SpeakerVolumeIcon.symbolName(levelFraction: levelFraction),
+            layoutReferenceIcon: SpeakerVolumeIcon.layoutReferenceSymbol(),
             mutedHelp: "Unmute",
             unmutedHelp: "Mute",
             action: action
@@ -30,6 +61,7 @@ struct InputMuteButton: View {
             isMuted: isMuted,
             mutedIcon: "mic.slash.fill",
             unmutedIcon: "mic.fill",
+            layoutReferenceIcon: "mic.fill",
             mutedHelp: "Unmute microphone",
             unmutedHelp: "Mute microphone",
             action: action
@@ -44,6 +76,7 @@ private struct BaseMuteButton: View {
     let isMuted: Bool
     let mutedIcon: String
     let unmutedIcon: String
+    let layoutReferenceIcon: String
     let mutedHelp: String
     let unmutedHelp: String
     let action: () -> Void
@@ -53,19 +86,22 @@ private struct BaseMuteButton: View {
 
     var body: some View {
         Button(action: action) {
-            ZStack {
-                Image(systemName: unmutedIcon)
-                    .opacity(isMuted ? 0 : 1)
-                Image(systemName: mutedIcon)
-                    .opacity(isMuted ? 1 : 0)
+            ZStack(alignment: .leading) {
+                Image(systemName: layoutReferenceIcon)
+                    .opacity(0)
+                Image(systemName: currentIcon)
+                    .contentTransition(.symbolEffect(.replace))
             }
             .font(.system(size: 14))
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(buttonColor)
+            .fixedSize()
+            .padding(.horizontal, 4)
             .scaleEffect(isPulsing ? 1.1 : 1.0)
             .frame(
                 minWidth: DesignTokens.Dimensions.minTouchTarget,
-                minHeight: DesignTokens.Dimensions.minTouchTarget
+                minHeight: DesignTokens.Dimensions.minTouchTarget,
+                alignment: .leading
             )
             .contentShape(Rectangle())
         }
@@ -76,6 +112,7 @@ private struct BaseMuteButton: View {
         .help(isMuted ? mutedHelp : unmutedHelp)
         .animation(.spring(response: 0.25, dampingFraction: 0.5), value: isPulsing)
         .animation(DesignTokens.Animation.hover, value: isHovered)
+        .animation(.easeInOut(duration: 0.18), value: unmutedIcon)
         .onChange(of: isMuted) { _, _ in
             isPulsing = true
             Task {
@@ -83,6 +120,10 @@ private struct BaseMuteButton: View {
                 isPulsing = false
             }
         }
+    }
+
+    private var currentIcon: String {
+        isMuted ? mutedIcon : unmutedIcon
     }
 
     private var buttonColor: Color {

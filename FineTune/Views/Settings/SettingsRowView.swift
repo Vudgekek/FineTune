@@ -56,7 +56,7 @@ struct SettingsRowView<Control: View>: View {
         }
 
         SettingsRowView(
-            icon: "speaker.wave.2",
+            icon: "speaker.wave.3",
             title: "Default Volume",
             description: nil
         ) {

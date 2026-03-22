@@ -31,12 +31,116 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
+@MainActor
+final class MenuBarSpeakerIconUpdater {
+    private weak var deviceVolumeMonitor: DeviceVolumeMonitor?
+    private var timer: Timer?
+    private var lastSymbolName: String?
+    private let statusItemTitle = "FineTune"
+    private weak var statusItemButton: NSStatusBarButton?
+
+    func start(deviceVolumeMonitor: DeviceVolumeMonitor) {
+        self.deviceVolumeMonitor = deviceVolumeMonitor
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.tick()
+            }
+        }
+        tick()
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func tick() {
+        guard let deviceVolumeMonitor else { return }
+        let defaultDeviceID = deviceVolumeMonitor.defaultDeviceID
+        let volume = deviceVolumeMonitor.volumes[defaultDeviceID] ?? 1.0
+        let isMuted = deviceVolumeMonitor.muteStates[defaultDeviceID] ?? false
+        let symbol = SpeakerVolumeIcon.symbolName(
+            levelFraction: Double(volume),
+            isMuted: isMuted
+        )
+
+        guard symbol != lastSymbolName else { return }
+        if updateStatusButtonImage(symbolName: symbol) {
+            lastSymbolName = symbol
+        }
+    }
+
+    @discardableResult
+    private func updateStatusButtonImage(symbolName: String) -> Bool {
+        let button: NSStatusBarButton
+        if let cached = statusItemButton {
+            button = cached
+        } else {
+            guard let discovered = findFineTuneStatusButton() else { return false }
+            statusItemButton = discovered
+            button = discovered
+        }
+
+        guard let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: statusItemTitle) else {
+            return false
+        }
+        image.isTemplate = true
+
+        DispatchQueue.main.async {
+            button.image = image
+        }
+        return true
+    }
+
+    private func findFineTuneStatusButton() -> NSStatusBarButton? {
+        if let statusItems = NSStatusBar.system.value(forKey: "_statusItems") as? [NSStatusItem] {
+            for item in statusItems {
+                guard let button = item.button else { continue }
+                if isFineTuneStatusButton(button) {
+                    return button
+                }
+            }
+        }
+
+        for window in NSApplication.shared.windows {
+            guard let root = window.contentView else { continue }
+            if let found = findStatusButton(in: root) {
+                return found
+            }
+        }
+
+        return nil
+    }
+
+    private func isFineTuneStatusButton(_ button: NSStatusBarButton) -> Bool {
+        button.accessibilityTitle() == statusItemTitle ||
+        button.toolTip == statusItemTitle ||
+        button.title == statusItemTitle
+    }
+
+    private func findStatusButton(in view: NSView) -> NSStatusBarButton? {
+        if let button = view as? NSStatusBarButton, isFineTuneStatusButton(button) {
+            return button
+        }
+
+        for subview in view.subviews {
+            if let found = findStatusButton(in: subview) {
+                return found
+            }
+        }
+
+        return nil
+    }
+}
+
 @main
 struct FineTuneApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var audioEngine: AudioEngine
     @StateObject private var updateManager = UpdateManager()
     @State private var showMenuBarExtra = true
+    private let menuBarSpeakerIconUpdater: MenuBarSpeakerIconUpdater?
 
     /// Icon style captured at launch (doesn't change during runtime)
     private let launchIconStyle: MenuBarIconStyle
@@ -143,6 +247,15 @@ struct FineTuneApp: App {
             queue: .main
         ) { [settings] _ in
             settings.flushSync()
+        }
+
+        if iconStyle == .speaker,
+           let deviceVolumeMonitor = engine.deviceVolumeMonitor as? DeviceVolumeMonitor {
+            let updater = MenuBarSpeakerIconUpdater()
+            updater.start(deviceVolumeMonitor: deviceVolumeMonitor)
+            menuBarSpeakerIconUpdater = updater
+        } else {
+            menuBarSpeakerIconUpdater = nil
         }
     }
 }

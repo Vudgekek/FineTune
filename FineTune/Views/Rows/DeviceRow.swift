@@ -100,7 +100,7 @@ struct DeviceRow: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                 } else {
-                    Image(systemName: "speaker.wave.2")
+                    Image(systemName: "speaker.wave.3")
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(.secondary)
                 }
@@ -148,7 +148,7 @@ struct DeviceRow: View {
 
             if hasVolumeControl {
                 // Mute button
-                MuteButton(isMuted: showMutedIcon) {
+                MuteButton(isMuted: showMutedIcon, levelFraction: sliderValue) {
                     if showMutedIcon {
                         // Unmute: restore to default if at 0
                         if sliderValue == 0 {

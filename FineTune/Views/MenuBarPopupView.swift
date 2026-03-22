@@ -317,7 +317,7 @@ struct MenuBarPopupView: View {
         HStack(spacing: DesignTokens.Spacing.xs) {
             // Output device
             HStack(spacing: 3) {
-                Image(systemName: "speaker.wave.2.fill")
+                Image(systemName: "speaker.wave.3.fill")
                     .font(.system(size: 9))
                 Text(defaultOutputDeviceName)
                     .lineLimit(1)
@@ -354,7 +354,7 @@ struct MenuBarPopupView: View {
                     showingInputDevices = false
                 }
             } label: {
-                Image(systemName: "speaker.wave.2.fill")
+                Image(systemName: "speaker.wave.3.fill")
                     .font(.system(size: iconSize, weight: .medium))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(showingInputDevices ? DesignTokens.Colors.textTertiary : DesignTokens.Colors.textPrimary)

@@ -36,7 +36,7 @@ struct DeviceEditRow: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                 } else {
-                    Image(systemName: isInputDevice ? "mic" : "speaker.wave.2")
+                    Image(systemName: isInputDevice ? "mic" : "speaker.wave.3")
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(.secondary)
                 }
